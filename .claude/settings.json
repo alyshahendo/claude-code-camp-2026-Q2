@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/mud.py send *)",
+      "Bash(python3 scripts/mud.py read)",
+      "Bash(python3 scripts/mud.py status)",
+      "Bash(python3 scripts/mud.py transcript)",
+      "Bash(python3 scripts/mud.py start)",
+      "Bash(python3 scripts/mud.py stop)",
+      "Bash(grep *)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(find *)",
+      "Bash(ls *)"
+    ]
+  }
+}
