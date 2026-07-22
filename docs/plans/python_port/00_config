@@ -1,0 +1,260 @@
+# Python Port Plan: 00_config
+
+Port the Ruby `Boukensha` configuration library from
+`week1_baseline/ruby/00_config` to Python at `week1_baseline/python/00_config`.
+
+## Goal
+
+Reproduce the behaviour and public surface of the Ruby step 0 library in
+idiomatic Python. A `Config` class loads settings from an external
+`.boukensha/` directory, and stateless task classes resolve provider, model, and
+system prompt per task. The example script must print the same information as the
+Ruby example.
+
+## Source inventory (Ruby)
+
+| Ruby file | Role |
+|-----------|------|
+| `lib/boukensha.rb` | top level require aggregator |
+| `lib/boukensha/config.rb` | `Boukensha::Config` (dir resolution, env load, settings load, MUD accessors, nested `dig`) |
+| `lib/boukensha/tasks/base.rb` | abstract stateless `Tasks::Base` (provider, model, prompt resolution) |
+| `lib/boukensha/tasks/player.rb` | concrete `Tasks::Player` (defines `task_name`) |
+| `prompts/system.md` | default system prompt shipped with the library |
+| `examples/example.rb` | runnable smoke test |
+| `Gemfile` | declares the `dotenv` dependency |
+
+## Target layout (Python)
+
+```
+week1_baseline/python/00_config/
+  pyproject.toml            # deps: pyyaml, python-dotenv; target Python 3.11+
+  README.md                 # port of the Ruby README, Python usage
+  boukensha/
+    __init__.py             # exports Config, Player (mirrors lib/boukensha.rb)
+    config.py               # Config class
+    tasks/
+      __init__.py
+      base.py               # Base
+      player.py             # Player
+  prompts/
+    system.md               # copied verbatim from the Ruby prompts/system.md
+  examples/
+    example.py              # smoke test, parity with example.rb
+```
+
+## Dependency mapping
+
+| Ruby | Python | Notes |
+|------|--------|-------|
+| `require "yaml"` | `import yaml` (PyYAML) | Python has no stdlib YAML, so PyYAML is a required dependency. Use `yaml.safe_load`. |
+| `require "dotenv"` (gem) | `python-dotenv` | `from dotenv import load_dotenv`. |
+| `require "pathname"` | `pathlib` (stdlib) | `from pathlib import Path`. |
+| `Dir.home` | `Path.home()` | |
+| `ENV.fetch("BOUKENSHA_DIR", nil)` | `os.environ.get("BOUKENSHA_DIR")` | |
+| `File.expand_path`, `File.join` | `Path(...).expanduser().resolve()`, `/` operator | |
+| `File.read(path).strip` | `Path(path).read_text().strip()` | |
+
+Keep the dependency footprint minimal, matching the Ruby "prefer standard
+library" preference. Only PyYAML and python-dotenv are external.
+
+## File by file translation
+
+### `boukensha/config.py`
+
+Class `Config` with:
+
+- Class constants:
+  - `DEFAULT_DIR = Path.home() / ".boukensha"`.
+  - `PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"`. From
+    `boukensha/config.py` this resolves to `00_config/prompts`, matching the
+    Ruby `File.expand_path("../../prompts", __dir__)`.
+- `__init__(self)`: set `self.dir = self._resolve_dir()`, call `self._load_env()`,
+  then `self.settings = self._load_settings()`. Preserve the Ruby ordering: dir,
+  then env, then settings.
+- `tasks(self, name=None)`: with no name return the full `tasks` mapping (or `{}`),
+  with a name return that task's settings dict.
+- `user_prompts_dir` property: `self.dir / "prompts"`.
+- MUD accessors: `mud_host` (default `"localhost"`), `mud_port` (default `4000`),
+  `mud_username`, `mud_password`. Implement as properties.
+- `dig(self, *keys)`: walk nested dicts, return `None` on a miss.
+- `__str__` and `__repr__`: return
+  `f"#<Boukensha::Config dir={self.dir} tasks={','.join(self.tasks().keys())}>"`
+  to match the Ruby `to_s`/`inspect` output.
+- Private helpers `_resolve_dir`, `_load_env`, `_load_settings` mirroring the Ruby
+  privates. `_resolve_dir` reads `BOUKENSHA_DIR` then falls back to `DEFAULT_DIR`,
+  expands user and resolves. `_load_env` calls `load_dotenv(env_file)` only when
+  `.env` exists. `_load_settings` returns `yaml.safe_load(...) or {}`, or `{}` when
+  the file is absent.
+
+### `boukensha/tasks/base.py`
+
+Class `Base` with class methods (stateless, no instances), matching the Ruby
+`self.`-methods:
+
+- `task_name(cls)`: raise `NotImplementedError` in the base.
+- `provider(cls, settings)`: return `settings["provider"]` or raise `ValueError`
+  with a message mirroring `tasks.<task_name>.provider is required`.
+- `model(cls, settings)`: same shape as provider.
+- `prompt_override(cls, settings, prompt="system")`: return `True` only when
+  `settings["prompt_override"]` is a dict and its `prompt` key equals `True`.
+- `prompt(cls, settings, name="system", user_prompts_dir=None, default_prompts_dir=None)`:
+  if override is on and a user prompt file exists, return its stripped text,
+  otherwise return the default prompt text.
+- `system_prompt(cls, settings, user_prompts_dir=None, default_prompts_dir=None)`:
+  convenience wrapper calling `prompt` with `name="system"`.
+- Private helpers `_read_user_prompt` (reads
+  `<user_prompts_dir>/<task_name>/<name>.md`), `_read_default_prompt` (reads
+  `<default_prompts_dir>/<name>.md`), `_read_file` (return stripped text or `None`).
+
+### `boukensha/tasks/player.py`
+
+Class `Player(Base)` overriding `task_name` to return `"player"`.
+
+### `boukensha/tasks/__init__.py`
+
+Export `Base` and `Player`.
+
+### `boukensha/__init__.py`
+
+Mirror `lib/boukensha.rb`: expose `Config` and `Player` at the package root so
+callers write `from boukensha import Config` and
+`from boukensha.tasks import Player`.
+
+### `prompts/system.md`
+
+Copy the Ruby file verbatim.
+
+### `examples/example.py`
+
+Port `example.rb` line for line:
+
+- Set `BOUKENSHA_DIR` default to the repo `.boukensha` if not already set, using a
+  path relative to the example file so it works from the repo root.
+- Build `Config`, fetch the player task settings, and print the same labelled
+  block: config dir, task names, provider, model, prompt override flag, first 60
+  characters of the system prompt, MUD host and port, MUD user, whether
+  `ANTHROPIC_API_KEY` is set, and the `Config` string form.
+
+## Key translation notes
+
+1. **String keys only.** The Ruby code checks both string and symbol keys
+   (`node[key.to_s] || node[key.to_sym]`) because YAML in Ruby can produce either.
+   PyYAML loads mapping keys as plain strings, so the Python port uses string keys
+   throughout. `dig`, `tasks`, and the task `fetch` helper all simplify to plain
+   dict lookups with `.get`. This removes the dual lookup entirely.
+
+2. **Stateless task classes.** Ruby uses class methods with a private `class <<
+   self` block. Python uses `@classmethod` for the public methods and name mangled
+   private helpers. No instances are created, matching the Ruby design.
+
+3. **Error types.** Ruby raises `ArgumentError` for missing provider or model.
+   Python maps this to `ValueError`, which is the closest idiomatic equivalent.
+   Keep the message text aligned so behaviour reads the same.
+
+4. **Path handling.** Use `pathlib.Path` end to end. Store `self.dir` as a `Path`.
+   The `__str__` output interpolates it, which renders the absolute path the same
+   way the Ruby string does.
+
+5. **Defaults not hardcoded.** As the README states, hardcode defaults (localhost,
+   4000) but never hardcode configurable values. Keep provider and model required
+   with a raised error when absent, matching Ruby.
+
+## Verification
+
+1. Create a throwaway `.boukensha/` (or point `BOUKENSHA_DIR` at the repo one) with
+   the `settings.yaml` shown in the Ruby README and a `prompts/player/system.md`
+   override.
+2. Run `python examples/example.py` from `week1_baseline/python/00_config`.
+3. Compare output against the Ruby expected output in the README. The labelled
+   block, the override flag, the truncated system prompt, and the `Config` string
+   form should match.
+4. Confirm parity with the Ruby runner by executing both entry points (see the
+   next section) and diffing their output.
+
+## Runner entry points (bin/)
+
+The repo drives each step through a small bash launcher under
+`week1_baseline/bin/<language>/<step>`. The port needs a Python launcher, and the
+existing Ruby launcher needs a path fix so both stay runnable.
+
+Current layout:
+
+```
+week1_baseline/bin/
+  ruby/00_config      # exists, but its relative path is broken
+  python/             # empty, needs the Python launcher
+```
+
+### Fix the Ruby launcher
+
+`week1_baseline/bin/ruby/00_config` currently reads:
+
+```bash
+#!/usr/bin/env bash
+
+cd "$(dirname "$0")/../ruby/00_config"
+bundle exec ruby examples/example.rb
+```
+
+From `bin/ruby/`, the relative path `../ruby/00_config` resolves back to
+`bin/ruby/00_config` (the script file itself), not the Ruby source directory. It
+was written for the older `bin/00_config` location and was not updated when the
+launcher moved into the `bin/ruby/` subdirectory. Correct it to climb two levels:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../../ruby/00_config"
+bundle exec ruby examples/example.rb
+```
+
+### Add the Python launcher
+
+Create `week1_baseline/bin/python/00_config`, mirroring the Ruby one but running
+the Python example. Use `uv`: the repo already standardises on it (see
+`week0_explore/circlemud-world-parser`, which ships `uv.lock`, `pyproject.toml`,
+and `.python-version`), and `uv run` is the direct parallel to the Ruby launcher's
+`bundle exec` (resolve and sync deps from the lockfile, then run):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../../python/00_config"
+uv run python examples/example.py
+```
+
+This makes `uv.lock` and `pyproject.toml` (with `pyyaml` and `python-dotenv`) the
+source of truth for the Python step, alongside a `.python-version` pinning the
+interpreter.
+
+Mark it executable (`chmod +x week1_baseline/bin/python/00_config`) so it matches
+the Ruby launcher's permissions.
+
+### Result
+
+Both ports then share one command shape:
+
+```bash
+./week1_baseline/bin/ruby/00_config      # runs the Ruby example
+./week1_baseline/bin/python/00_config    # runs the Python example
+```
+
+This is what step 3 of Verification diffs for output parity.
+
+## Out of scope
+
+Per the README, the per turn ceilings (`max_iterations`, `max_turn_tokens`,
+`max_output_tokens`, `compaction_threshold`) are defined in the schema for later
+steps but are not read yet. Do not implement them in this step.
+
+## Suggested order of work
+
+1. Scaffold the package directories and `pyproject.toml`.
+2. Copy `prompts/system.md`.
+3. Port `config.py`.
+4. Port `tasks/base.py` then `tasks/player.py`.
+5. Wire `__init__.py` exports.
+6. Port `examples/example.py`.
+7. Verify against the Ruby expected output.
