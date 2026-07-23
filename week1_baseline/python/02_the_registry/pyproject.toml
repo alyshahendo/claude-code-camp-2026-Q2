@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "boukensha"
 version = "0.1.0"
-description = "Boukensha step 1: struct skeleton (Python port)"
+description = "Boukensha step 2: the tool registry (Python port)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
