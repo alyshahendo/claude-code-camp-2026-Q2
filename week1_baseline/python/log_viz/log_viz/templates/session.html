@@ -1,0 +1,181 @@
+{% extends "layout.html" %}
+{% block body %}
+<a href="/" class="back">&larr; All sessions</a>
+
+<h1>Session {{ session.id }}</h1>
+<p class="meta">
+  Started {{ format_time(session.started_at) }}
+</p>
+
+{% if session.end_reason %}
+  {% if session.stopped %}
+    <div class="banner banner-warn">&#9888; stopped: {{ session.end_reason }}</div>
+  {% else %}
+    <div class="banner banner-ok">&#10003; completed</div>
+  {% endif %}
+{% endif %}
+
+<div class="statstrip">
+  <div class="statstrip-head">
+    <span class="statstrip-model">
+      {{ session.model_summary }}
+    </span>
+    <span class="statstrip-cost">cost &asymp; {{ fmt_cost(session.estimated_cost) }}</span>
+  </div>
+
+  {% if session.context_window and (session.context_window | int) > 0 %}
+    {{ progress_bar(session.peak_input_tokens, session.context_window,
+       label="Peak context &middot; " ~ fmt_tokens(session.peak_input_tokens) ~ " / " ~ fmt_tokens(session.context_window) ~ " (" ~ pct(session.peak_input_tokens, session.context_window) ~ "%)") }}
+  {% endif %}
+
+  {% set largest = session.largest_turn %}
+  {% if session.max_turn_tokens and (session.max_turn_tokens | int) > 0 and largest %}
+    {% set tripped = any_turn_reason(session.turns, "max_tokens") %}
+    {{ progress_bar(largest.tokens, session.max_turn_tokens,
+       label="Largest turn &middot; " ~ fmt_tokens(largest.tokens) ~ " / " ~ fmt_tokens(session.max_turn_tokens) ~ " (" ~ pct_raw(largest.tokens, session.max_turn_tokens) ~ "%" ~ (" &#9888; max_tokens" if tripped else "") ~ ")",
+       danger=tripped) }}
+  {% endif %}
+
+  {% set busiest = session.busiest_turn %}
+  {% if session.iteration_max and busiest %}
+    {{ progress_bar(busiest.iterations, session.iteration_max,
+       label="Iterations &middot; " ~ busiest.iterations ~ " / " ~ session.iteration_max ~ " (turn " ~ busiest.n ~ ")",
+       danger=session.any_limit_tripped and busiest.reason == "max_iterations") }}
+  {% endif %}
+
+  <div class="statstrip-total">
+    Session total: {{ fmt_tokens(session.total_input_tokens) }} tok in
+    &middot; {{ fmt_tokens(session.total_output_tokens) }} tok out
+    &middot; across {{ session.turn_count_real }} turn{{ "" if session.turn_count_real == 1 else "s" }}
+  </div>
+</div>
+
+{% if session.cost_breakdown %}
+  <div class="breakdown">
+    <div class="breakdown-title">Cost by task / provider / model</div>
+    <table class="breakdown-table">
+      <thead>
+        <tr>
+          <th>Task</th>
+          <th>Provider</th>
+          <th>Model</th>
+          <th class="nowrap">Calls</th>
+          <th class="nowrap">Tokens</th>
+          <th class="nowrap">Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in session.cost_breakdown %}
+          <tr>
+            <td>{{ row.task }}</td>
+            <td>{{ row.provider }}</td>
+            <td>{{ row.model }}</td>
+            <td class="nowrap">{{ row.calls }}</td>
+            <td class="nowrap">{{ fmt_tokens(row.input) }} / {{ fmt_tokens(row.output) }}</td>
+            <td class="nowrap">{{ fmt_cost_cell(row.cost, known=row.cost_known) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
+{% if session.usage_series | length > 1 %}
+  <div class="spark-wrap">
+    <div class="spark-label">input tokens / iteration &middot; peak {{ fmt_tokens(session.peak_input_tokens) }}</div>
+    {{ sparkline(session.usage_series, max_=session.peak_input_tokens) }}
+  </div>
+{% endif %}
+
+<div class="transcript">
+  {% set ns = namespace(last_iteration=None) %}
+  {% for entry in session.entries %}
+    {% if entry.type != "turn_end" and entry.iteration != ns.last_iteration %}
+      <div class="iteration-marker">Iteration {{ entry.iteration }}</div>
+      {% set ns.last_iteration = entry.iteration %}
+    {% endif %}
+
+    {% if entry.type == "user" %}
+      <div class="msg msg-user">
+        <div class="msg-role"><span>User</span></div>
+        <div class="msg-body">{{ text_html(entry.text) }}</div>
+      </div>
+    {% elif entry.type == "compaction" %}
+      <div class="divider divider-compaction">
+        &#8635; context compacted &mdash; {{ entry.dropped }} message{{ "" if entry.dropped == 1 else "s" }} dropped
+      </div>
+    {% elif entry.type == "turn_end" %}
+      {% set tripped = session.limit_reason(entry.reason) %}
+      {% set has_bar = (session.max_turn_tokens | int) > 0 and entry.tokens is not none %}
+      <div class="turn-strip{{ " danger" if tripped else "" }}">
+        <div class="turn-strip-text">
+          {% if tripped %}&#9888;{% else %}&#10003;{% endif %}
+          Turn {{ entry.turn }}
+          &middot; {{ entry.iterations }} iteration{{ "" if entry.iterations == 1 else "s" }}
+          {% if entry.tokens is not none %}&middot; {{ fmt_tokens(entry.tokens) }} tok{% endif %}
+          {% if tripped %}&middot; {{ entry.reason }}{% endif %}
+        </div>
+        {% if has_bar %}
+          <div class="bar"><div class="{{ "bar-fill danger" if tripped else "bar-fill" }}" style="width: {{ pct(entry.tokens, session.max_turn_tokens) }}%"></div></div>
+          <div class="turn-strip-pct">{{ pct_raw(entry.tokens, session.max_turn_tokens) }}%</div>
+        {% endif %}
+      </div>
+    {% elif entry.type == "plan" %}
+      <div class="msg msg-assistant msg-preamble">
+        <div class="msg-role">
+          <span>Plan</span>
+          <span class="usage">before tool call</span>
+        </div>
+        <div class="msg-body">{{ text_html(entry.text) }}</div>
+      </div>
+    {% elif entry.type == "assistant" and (entry.text or "").startswith("(tool use") %}
+      <div class="tool-marker">
+        <span>{{ entry.text }}</span>
+        {{ ctx_chip(entry.usage, entry.running_turn_tokens,
+                    context_window=session.context_window,
+                    max_turn_tokens=session.max_turn_tokens,
+                    provider=entry.provider, model=entry.model,
+                    cost_usd=entry.cost_usd) }}
+      </div>
+    {% elif entry.type == "reasoning" %}
+      <div class="msg msg-assistant msg-reasoning">
+        <div class="msg-role"><span>Reasoning</span></div>
+        <div class="msg-body">
+          {% if entry.redacted or not (entry.text or "").strip() %}
+            <span class="muted">(reasoning hidden)</span>
+          {% else %}
+            {{ text_html(entry.text) }}
+          {% endif %}
+        </div>
+      </div>
+    {% elif entry.type == "assistant" %}
+      <div class="msg msg-assistant">
+        <div class="msg-role">
+          <span>Assistant</span>
+          <span class="usage">
+            {% if entry.stop_reason %}stop: {{ entry.stop_reason }}{% endif %}
+          </span>
+        </div>
+        <div class="msg-body">{{ text_html(entry.text) }}</div>
+        {% if entry.usage %}
+          <div class="msg-foot">
+            {{ ctx_chip(entry.usage, entry.running_turn_tokens,
+                        context_window=session.context_window,
+                        max_turn_tokens=session.max_turn_tokens,
+                        provider=entry.provider, model=entry.model,
+                        cost_usd=entry.cost_usd) }}
+          </div>
+        {% endif %}
+      </div>
+    {% elif entry.type == "tool" %}
+      <div class="tool-call{{ "" if entry.tool_ok else " tool-error" }}">
+        <div class="tool-name">
+          &#9881; {{ entry.tool_name }}({{ format_args(entry.tool_args) }})
+          {% if not entry.tool_ok %}<span class="tool-badge">error</span>{% endif %}
+        </div>
+        <pre class="tool-result">{{ ansi_html(entry.tool_result) }}</pre>
+      </div>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endblock %}

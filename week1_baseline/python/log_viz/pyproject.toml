@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "log-viz"
+version = "0.1.0"
+description = "Boukensha log viewer (Python port of the Ruby Sinatra app)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["log_viz"]
+
+[tool.ruff]
+line-length = 120
