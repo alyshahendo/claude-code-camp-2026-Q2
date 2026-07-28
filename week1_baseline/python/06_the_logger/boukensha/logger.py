@@ -87,7 +87,11 @@ class Logger:
         return Path(config().dir) / self.DEFAULT_SESSION_DIR
 
     def _write_log(self, event):
-        line = json.dumps({**event, "session_id": self.session_id, "at": self._now_iso8601()})
+        # Compact separators match Ruby's JSON.generate byte-for-byte.
+        line = json.dumps(
+            {**event, "session_id": self.session_id, "at": self._now_iso8601()},
+            separators=(",", ":"),
+        )
         self._log_io.write(line + "\n")
         self._log_io.flush()
 
