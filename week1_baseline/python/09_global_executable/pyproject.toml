@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "boukensha"
+dynamic = ["version"]
+description = "Boukensha step 9: the global executable (Python port)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+# The console script: installing this project puts a `boukensha` command on PATH,
+# the Python analog of the Ruby gem's bin/boukensha executable.
+[project.scripts]
+boukensha = "boukensha_loader:main"
+
+# Single source of truth for the version, read from boukensha/version.py — the
+# analog of the gemspec's `spec.version = Boukensha::VERSION`.
+[tool.hatch.version]
+path = "boukensha/version.py"
+pattern = 'VERSION = "(?P<version>[^"]+)"'
+
+[tool.hatch.build.targets.wheel]
+only-include = ["boukensha", "boukensha_loader.py"]
+
+[tool.ruff]
+line-length = 120
